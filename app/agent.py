@@ -21,7 +21,7 @@ from pathlib import Path
 from contextlib import nullcontext
 from time import perf_counter
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults
 from pydantic_ai.exceptions import ModelHTTPError
 from fastmcp import Client
 from pydantic_ai.mcp import MCPToolset, StdioTransport
@@ -29,6 +29,7 @@ from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.providers.google import GoogleProvider
+from app.tools import save_learning_log
 
 from app import tools
 from app.retrieval import run_full_context
@@ -83,13 +84,18 @@ FULL_CONTEXT_PROMPT = "<資料>\n{materials}\n</資料>\n\n質問: {question}"
 
 
 # モデルは実行時に渡す（テストではAPIを呼ばない TestModel に差し替えるため）
-agent = Agent(instructions=INSTRUCTIONS)
-agent.tool_plain(tools.search_materials)
+# エージェントを作る
+agent = Agent(
+    instructions=INSTRUCTIONS,
+    output_type=[str, DeferredToolRequests],
+)
 
-# TODO(第3回 演習): tools.py に make_quiz を作り、ここで登録しよう
+# ツールを登録する
+agent.tool_plain(tools.search_materials)
 agent.tool_plain(tools.search_glossary)
 agent.tool_plain(tools.get_lecture_summary)
 agent.tool_plain(tools.make_quiz)
+agent.tool_plain(save_learning_log, requires_approval=True)
 
 # 第5回: 使う MCP サーバーの設定ファイル。Claude Desktop や Cursor と同じ "mcpServers" 形式
 MCP_CONFIG = Path(__file__).resolve().parent / "mcp_servers.json"
@@ -210,6 +216,7 @@ def main() -> None:
         if not args.question:
             parser.error("質問を指定してください")
 
+
         print(f"[model] {MODEL}")
         if args.mcp:
             print("[tools] MCP サーバー（app/mcp_servers.json）")
@@ -219,17 +226,41 @@ def main() -> None:
             if args.full_context:
                 result = run_full_context(
                     target, args.question, build_model(),
-                    instructions=FULL_CONTEXT_INSTRUCTIONS, prompt_template=FULL_CONTEXT_PROMPT,
+                    instructions=FULL_CONTEXT_INSTRUCTIONS,
+                    prompt_template=FULL_CONTEXT_PROMPT,
                 )
             else:
-                result = target.run_sync(args.question, model=build_model())
+                result = target.run_sync(
+                    args.question,
+                    model=build_model(),
+                )
+
+            # 第3回宿題：ツール実行前の承認
+            if isinstance(result.output, DeferredToolRequests):
+                approvals = {}
+                for approval in result.output.approvals:
+                    approved = input(
+                        f"ツール {approval.tool_name} を実行してよいですか？ [y/N] "
+                    ).strip().lower() == "y"
+                    approvals[approval.tool_call_id] = approved
+
+                result = target.run_sync(
+                    message_history=result.all_messages(),
+                    deferred_tool_results=DeferredToolResults(
+                        approvals=approvals
+                    ),
+                    model=build_model(),
+                )
+
         except ModelHTTPError as e:
             print(api_error_message(e.status_code, str(e.body)[:200]))
             raise SystemExit(1)
+
         elapsed_seconds = perf_counter() - started
         print(result.output)
         if args.trace:
             print_trace(result, elapsed_seconds)
+
 
 
 if __name__ == "__main__":

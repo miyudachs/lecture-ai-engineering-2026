@@ -8,6 +8,7 @@ import json
 import random
 from functools import cache
 from pathlib import Path
+from datetime import datetime
 
 from app.config import api_error_message
 
@@ -144,3 +145,18 @@ def make_quiz(lecture: int) -> str:
         },
         ensure_ascii=False,
     )
+
+def save_learning_log(title: str, content: str) ->str:
+    """学習記録を learning_log/ フォルダに保存する。"""
+
+    log_dir = Path("learning_log")
+    log_dir.mkdir(exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_path = log_dir / f"{timestamp}.md"
+
+    text = f"# {title}\n\n{content}\n"
+    file_path.write_text(text, encoding="utf-8")
+
+    return f"学習記録を{file_path}に保存しました。"
+ 
