@@ -123,6 +123,51 @@ def open_index(path: Path):
     finally:
         db.close()
 
+def add_neighbor_pages(results: list[dict]) -> list[dict]:
+    """検索結果に、同じ資料内の前後1ページを追加する。"""
+    pages = load_pages(RAG_SOURCE)
+
+    pages_by_document_and_number = {
+        (page["document_id"], page["page"]): page
+        for page in pages
+    }
+
+    expanded = []
+    seen = set()
+
+    for result in results:
+        document_id = result["document_id"]
+        page_number = result["page"]
+
+        for target_page_number in (
+            page_number - 1,
+            page_number,
+            page_number + 1,
+        ):
+            page = pages_by_document_and_number.get(
+                (document_id, target_page_number)
+            )
+
+            if page is None:
+                continue
+
+            key = (page["document_id"], page["page"])
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            item = dict(page)
+
+            if page["page_id"] == result["page_id"]:
+                item["distance"] = result.get("distance")
+            else:
+                item["neighbor_of"] = result["page_id"]
+
+            expanded.append(item)
+
+    return expanded
 
 def search(query: str) -> list[dict]:
     """質問を埋め込み、近いページを最大RAG_TOP_K件返す。"""
@@ -135,7 +180,9 @@ def search(query: str) -> list[dict]:
                    vec_distance_cosine(embedding, ?) AS distance
             FROM chunks ORDER BY distance, page_id LIMIT ?
         """, (sqlite_vec.serialize_float32(vector), RAG_TOP_K))
-        return [dict(row) for row in rows]
+        results = [dict(row) for row in rows]
+
+    return add_neighbor_pages(results)
 
 
 def search_graph(query: str) -> dict:
